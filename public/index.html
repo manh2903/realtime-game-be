@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Realtime Game Backend — Demo Client</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0;
+        background: #0b1020;
+        color: #e8ecf1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        background: rgba(255, 255, 255, 0.07);
+        padding: 10px 12px;
+        border-radius: 10px;
+        font-size: 14px;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      canvas {
+        display: block;
+        background: #111827;
+        border-radius: 16px;
+        border: 1px solid #1f2937;
+      }
+      button {
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      button:disabled {
+        background: #334155;
+        cursor: not-allowed;
+      }
+      input {
+        background: #1e293b;
+        border: 1px solid #334155;
+        color: #e8ecf1;
+        padding: 8px 12px;
+        border-radius: 8px;
+        margin-right: 8px;
+      }
+      .hud-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .hud-item:last-child {
+        margin-bottom: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">
+      <div class="hud-item">
+        <span>Room:</span>
+        <span id="roomId" style="margin-left: 8px">-</span>
+      </div>
+      <div class="hud-item">
+        <span>Players:</span>
+        <span id="count" style="margin-left: 8px">0</span>
+      </div>
+      <div class="hud-item">
+        <span>Ping:</span>
+        <span id="ping" style="margin-left: 8px">-</span> ms
+      </div>
+      <div class="hud-item" style="margin-top: 16px">
+        <input type="text" id="inputName" placeholder="Your name" />
+        <button id="btnSetName">Set</button>
+      </div>
+      <div class="hud-item">
+        <button id="btnJoin">Join match</button>
+      </div>
+       <div class="hud-item" style="margin-top: 16px">
+        <input type="text" id="inputChat" placeholder="Say something..." />
+        <button id="btnSendChat">Send</button>
+      </div>
+    </div>
+    <canvas id="cv" width="1000" height="600"></canvas>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const cv = document.getElementById("cv");
+      const ctx = cv.getContext("2d");
+      const roomEl = document.getElementById("roomId");
+      const countEl = document.getElementById("count");
+      const pingEl = document.getElementById("ping");
+      const btnJoin = document.getElementById("btnJoin");
+      const inputName = document.getElementById("inputName");
+      const btnSetName = document.getElementById("btnSetName");
+      const inputChat = document.getElementById("inputChat");
+      const btnSendChat = document.getElementById("btnSendChat");
+
+      const socket = io();
+
+      let last = performance.now();
+      let seq = 0;
+      const keys = new Set();
+      let lastPing = 0;
+      let world = { width: cv.width, height: cv.height };
+      let meId = null;
+      let state = { players: [] };
+      const playerChats = new Map(); // playerId -> { message, timestamp }
+
+      socket.emit("hello", { name: "DemoPlayer" });
+      socket.on("hello_ok", (info) => {
+        world = info.world;
+        meId = info.playerId;
+        inputName.value = info.name;
+        console.log("Hello OK", info);
+      });
+
+      btnJoin.onclick = () => {
+        socket.emit("join_match");
+        btnJoin.disabled = true;
+      };
+
+      btnSetName.onclick = () => {
+        const name = inputName.value;
+        if (name) {
+          socket.emit("set_name", name);
+        }
+      };
+
+      inputName.onkeydown = (e) => {
+        if (e.key === "Enter") btnSetName.onclick();
+      }
+
+      btnSendChat.onclick = () => {
+        const message = inputChat.value;
+        if (message) {
+          socket.emit("chat", message);
+          inputChat.value = "";
+        }
+      };
+
+      inputChat.onkeydown = (e) => {
+        if (e.key === "Enter") btnSendChat.onclick();
+      }
+
+      socket.on("joined", ({ roomId }) => {
+        roomEl.textContent = roomId;
+      });
+
+      socket.on("system", (msg) => {
+        if (msg.type === "count") countEl.textContent = msg.count;
+      });
+
+      socket.on("chat", (payload) => {
+        playerChats.set(payload.senderId, { message: payload.message, timestamp: Date.now() });
+      });
+
+      socket.on("state", (s) => {
+        state = s;
+      });
+
+      // ping
+      setInterval(() => {
+        const t = Date.now();
+        socket.emit("ping", t);
+      }, 1000);
+      socket.on("pong", (t) => {
+        lastPing = Date.now() - t;
+        pingEl.textContent = lastPing;
+      });
+
+      // input loop
+      function loop(now) {
+        const dt = Math.min(0.25, (now - last) / 1000);
+        last = now;
+
+        const up = keys.has("ArrowUp") || keys.has("KeyW");
+        const down = keys.has("ArrowDown") || keys.has("KeyS");
+        const left = keys.has("ArrowLeft") || keys.has("KeyA");
+        const right = keys.has("ArrowRight") || keys.has("KeyD");
+        const payload = { seq: ++seq, up, down, left, right, dt };
+        socket.emit("input", payload);
+
+        draw();
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+
+      function onKey(e, isDown) {
+        if (document.activeElement === inputName || document.activeElement === inputChat) {
+          return;
+        }
+        keys[isDown ? 'add' : 'delete'](e.code);
+      }
+      addEventListener("keydown", (e) => onKey(e, true));
+      addEventListener("keyup", (e) => onKey(e, false));
+
+      function draw() {
+        ctx.clearRect(0, 0, cv.width, cv.height);
+        // world bounds
+        ctx.strokeStyle = "#1f2937";
+        ctx.strokeRect(0.5, 0.5, world.width - 1, world.height - 1);
+
+        for (const p of state.players) {
+          ctx.fillStyle = p.id === meId ? "#22c55e" : "#93c5fd";
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#e5e7eb";
+          ctx.font = "12px system-ui, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(p.name || p.id.slice(0, 5), p.x, p.y - 16);
+
+          const chat = playerChats.get(p.id);
+          if (chat && Date.now() - chat.timestamp < 8500) {
+            drawChatBubble(ctx, p.x, p.y - 30, chat.message);
+          }
+        }
+      }
+
+      function drawChatBubble(ctx, x, y, text) {
+        ctx.font = "12px system-ui, sans-serif";
+        const metrics = ctx.measureText(text);
+        const width = metrics.width + 20;
+        const height = 24;
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.beginPath();
+        ctx.roundRect(x - width / 2, y - height, width, height, 8);
+        ctx.fill();
+
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.fillText(text, x, y - height / 2 + 4);
+      }
+    </script>
+  </body>
+</html>
