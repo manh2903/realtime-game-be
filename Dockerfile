@@ -1,12 +1,17 @@
-# Simple production image
-FROM node:18-alpine
+FROM oven/bun:latest
 
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
 
+# Copy package files
+COPY package.json bun.lock ./
+
+# Install dependencies với Bun
+RUN bun install --production
+
+# Copy source code
 COPY . .
 
-ENV NODE_ENV=production
 EXPOSE 3000
-CMD ["node", "src/server.js"]
+
+# Start với Bun
+CMD ["bun", "start"]
